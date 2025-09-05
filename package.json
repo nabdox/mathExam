@@ -1,0 +1,8 @@
+{
+  "name": "math-exam",
+  "version": "1.0.0",
+  "description": "Standalone math exam web application",
+  "scripts": {
+    "test": "echo 'No tests defined'"
+  }
+}

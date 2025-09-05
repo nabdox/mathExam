@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Application Examens Mathématiques</title>
+<!-- Libraries -->
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<style>
+body {font-family: Arial, sans-serif; margin:0; padding:0;}
+nav {background:#2c3e50; color:#fff; padding:1rem;}
+main {padding:1rem;}
+section {margin-bottom:2rem;}
+label {display:block; margin-top:0.5rem;}
+input, textarea, select {width:100%; padding:0.5rem;}
+table {width:100%; border-collapse: collapse;}
+th, td {border:1px solid #ccc; padding:0.5rem;}
+.options input {width:auto;}
+@media(min-width:768px){
+  #layout{display:flex;}
+  nav{width:200px; min-height:100vh;}
+  main{flex:1;}
+}
+</style>
+</head>
+<body>
+<div id="layout">
+<nav>
+  <h2>Menu</h2>
+  <ul>
+    <li><a href="#questions">Questions</a></li>
+    <li><a href="#classe">Classe</a></li>
+    <li><a href="#exam">Examens</a></li>
+    <li><a href="#stats">Statistiques</a></li>
+  </ul>
+</nav>
+<main>
+  <!-- Question creation -->
+  <section id="questions">
+    <h2>Création de questions</h2>
+    <form id="question-form">
+      <label>Énoncé (LaTeX autorisé)</label>
+      <textarea id="q-text" required></textarea>
+      <label>Points</label>
+      <input type="number" id="q-points" min="1" value="1"/>
+      <div id="options">
+        <!-- options inserted here -->
+      </div>
+      <button type="button" id="add-option">Ajouter une option</button>
+      <button type="submit">Enregistrer la question</button>
+    </form>
+    <h3>Questions enregistrées</h3>
+    <ol id="question-list"></ol>
+    <button type="button" onclick="exportExamPDF()">Exporter l'examen en PDF</button>
+  </section>
+
+  <!-- Class management -->
+  <section id="classe">
+    <h2>Gestion de la classe</h2>
+    <input type="file" id="student-file" accept=".xlsx" />
+    <table>
+      <thead><tr><th>Numéro</th><th>Nom</th><th>Date de naissance</th></tr></thead>
+      <tbody id="student-body"></tbody>
+    </table>
+    <button type="button" onclick="exportResultsExcel()">Exporter résultats</button>
+  </section>
+
+  <!-- Exam taking -->
+  <section id="exam">
+    <h2>Passer un examen</h2>
+    <label>Élève</label>
+    <select id="student-select"></select>
+    <div id="exam-questions"></div>
+    <button type="button" onclick="submitExam()">Soumettre</button>
+  </section>
+
+  <!-- Statistics -->
+  <section id="stats">
+    <h2>Statistiques</h2>
+    <canvas id="chart" width="400" height="200"></canvas>
+    <div id="stats-text"></div>
+  </section>
+</main>
+</div>
+<script>
+// ----- Data management -----
+let questions = JSON.parse(localStorage.getItem('questions') || '[]');
+let students = JSON.parse(localStorage.getItem('students') || '[]');
+let results = JSON.parse(localStorage.getItem('results') || '{}');
+function save(){
+  localStorage.setItem('questions', JSON.stringify(questions));
+  localStorage.setItem('students', JSON.stringify(students));
+  localStorage.setItem('results', JSON.stringify(results));
+}
+
+// ----- Question handling -----
+const qForm = document.getElementById('question-form');
+const optionsDiv = document.getElementById('options');
+function addOption(text='', correct=false){
+  const idx = optionsDiv.children.length;
+  const wrapper = document.createElement('div');
+  wrapper.className = 'options';
+  wrapper.innerHTML = `Option ${idx+1}: <input type="text" value="${text}"> \
+  Correcte <input type="checkbox" ${correct? 'checked':''}>`;
+  optionsDiv.appendChild(wrapper);
+}
+addOption(); addOption();
+
+document.getElementById('add-option').onclick = () => addOption();
+
+qForm.onsubmit = (e)=>{
+  e.preventDefault();
+  const text = document.getElementById('q-text').value.trim();
+  const points = parseFloat(document.getElementById('q-points').value) || 1;
+  const opts = [...optionsDiv.children].map(div=>({
+    text: div.querySelector('input[type=text]').value,
+    correct: div.querySelector('input[type=checkbox]').checked
+  })).filter(o=>o.text);
+  if(opts.length <2){ alert('Au moins deux options'); return; }
+  questions.push({text, points, options: opts});
+  qForm.reset(); optionsDiv.innerHTML=''; addOption(); addOption();
+  save(); renderQuestions(); MathJax.typeset();
+};
+
+function renderQuestions(){
+  const list = document.getElementById('question-list');
+  list.innerHTML='';
+  questions.forEach((q,i)=>{
+    const li = document.createElement('li');
+    li.innerHTML = `${q.text} (points: ${q.points})`;
+    list.appendChild(li);
+  });
+}
+renderQuestions();
+
+// ----- Student handling -----
+const studentBody = document.getElementById('student-body');
+document.getElementById('student-file').addEventListener('change', handleStudentFile);
+function handleStudentFile(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const data = new Uint8Array(e.target.result);
+    const workbook = XLSX.read(data, {type:'array'});
+    const sheet = workbook.Sheets['NotesCC'];
+    if(!sheet){alert('Feuille NotesCC manquante'); return;}
+    const rows = XLSX.utils.sheet_to_json(sheet, {header:1});
+    students = rows.slice(1).filter(r=>r.length).map((r,i)=>({
+      id: i+1, number: ("0" + (i+1)).slice(-2), name: r[2]||'', birth: r[3]||''
+    }));
+    save(); renderStudents(); fillStudentSelect();
+  };
+  reader.readAsArrayBuffer(file);
+}
+function renderStudents(){
+  studentBody.innerHTML = '';
+  students.forEach(s=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${s.number}</td><td>${s.name}</td><td>${s.birth}</td>`;
+    studentBody.appendChild(tr);
+  });
+}
+renderStudents();
+function fillStudentSelect(){
+  const sel = document.getElementById('student-select');
+  sel.innerHTML = students.map(s=>`<option value="${s.id}">${s.number} - ${s.name}</option>`).join('');
+}
+fillStudentSelect();
+
+// ----- Exam taking -----
+function loadExam(){
+  const container = document.getElementById('exam-questions');
+  container.innerHTML='';
+  questions.forEach((q,qi)=>{
+    const div = document.createElement('div');
+    div.innerHTML = `<p>${qi+1}. ${q.text}</p>`;
+    q.options.forEach((o,oi)=>{
+      const id = `q${qi}_o${oi}`;
+      div.innerHTML += `<label><input type='checkbox' name='${id}'> ${o.text}</label>`;
+    });
+    container.appendChild(div);
+  });
+  MathJax.typesetPromise();
+}
+loadExam();
+
+function submitExam(){
+  const studentId = document.getElementById('student-select').value;
+  let score=0, total=0;
+  questions.forEach((q,qi)=>{
+    total += q.points;
+    let correct=true;
+    q.options.forEach((o,oi)=>{
+      const checked = document.querySelector(`input[name=q${qi}_o${oi}]`).checked;
+      if(checked!==o.correct) correct=false;
+    });
+    if(correct) score += q.points;
+  });
+  const final = score/total*20;
+  results[studentId] = {score: final};
+  save(); updateStats();
+  alert(`Score: ${final.toFixed(2)}/20`);
+}
+
+// ----- Statistics -----
+let chart;
+function updateStats(){
+  const ctx = document.getElementById('chart');
+  const scores = students.map(s=>results[s.id]?.score||0);
+  const intervals = [0,5,8,10,12,15,17,20];
+  const counts = new Array(intervals.length-1).fill(0);
+  scores.forEach(sc=>{
+    for(let i=0;i<intervals.length-1;i++){
+      if(sc>=intervals[i] && sc<intervals[i+1]){counts[i]++; break;}
+    }
+  });
+  const labels = ['0-5','5-8','8-10','10-12','12-15','15-17','17-20'];
+  if(chart) chart.destroy();
+  chart = new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'Élèves',data:counts,backgroundColor:'#3498db'}]}});
+  const mean = scores.reduce((a,b)=>a+b,0)/ (scores.length||1);
+  const sorted = scores.slice().sort((a,b)=>a-b);
+  const median = sorted[Math.floor(sorted.length/2)]||0;
+  const mode = scores.sort((a,b)=>scores.filter(v=>v===a).length - scores.filter(v=>v===b).length).pop()||0;
+  const variance = scores.reduce((a,b)=>a+Math.pow(b-mean,2),0)/(scores.length||1);
+  const std = Math.sqrt(variance);
+  document.getElementById('stats-text').innerText = `Moyenne: ${mean.toFixed(2)}, Médiane: ${median.toFixed(2)}, Mode: ${mode.toFixed(2)}, Écart-type: ${std.toFixed(2)}`;
+}
+updateStats();
+
+// ----- Export functions -----
+function exportExamPDF(){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  let y=10;
+  questions.forEach((q,i)=>{
+    doc.text(`${i+1}. ${q.text}`,10,y); y+=10;
+    q.options.forEach(o=>{doc.text(`- ${o.text}`,15,y); y+=8;});
+    y+=4;
+  });
+  doc.save('examen.pdf');
+}
+
+function exportResultsExcel(){
+  const data = students.map(s=>({
+    Numero: s.number,
+    Nom: s.name,
+    Score: results[s.id]?.score||0
+  }));
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Resultats');
+  XLSX.writeFile(wb, 'resultats.xlsx');
+}
+</script>
+</body>
+</html>
